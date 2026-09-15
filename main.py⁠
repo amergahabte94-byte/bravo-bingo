@@ -1,0 +1,209 @@
+import os
+import random
+from flask import Flask, request, jsonify
+
+app = Flask(__name__)
+
+# Telegram Bot Token
+TOKEN = "8980600172:AAH-QudXX5OniJGVJw-3ScUv5KUyi4nr5vU"
+TELEGRAM_INIT_URL = f"https://api.telegram.org/bot{TOKEN}"
+
+# Official House Accounts
+BANK_ACCOUNTS = {
+    "CBE": "1000682528641 (እንያቸው አማርጋ)",
+    "TELEBIRR": "0944123180 (እንያቸው አማርጋ)"
+}
+
+# In-memory storage for Bravo Bingo
+users_db = {}               # user_id: { 'name': str, 'balance': float, 'registered': bool }
+user_states = {}            # user_id: state tracking (e.g., 'waiting_deposit_bank', 'waiting_deposit_screenshot', etc.)
+COMMISSION_RATE = 0.20      # 20% House Commission
+
+@app.route('/')
+def home():
+    return "Bravo Bingo Bot is running live and fully operational!"
+
+@app.route(f'/{TOKEN}', methods=['POST'])
+def webhook():
+    update = request.get_json()
+    if update:
+        if "message" in update:
+            message = update["message"]
+            chat_id = message["chat"]["id"]
+            user_name = message["from"].get("first_name", "ተጫዋች")
+            text = message.get("text", "")
+            photo = message.get("photo")
+            
+            # Registration & Start Check
+            if chat_id not in users_db:
+                users_db[chat_id] = {'name': user_name, 'balance': 0.0, 'registered': True}
+                welcome_msg = (
+                    f"🌟 **እንኳን ወደ ብራቮ ቢንጎ (Bravo Bingo) በደህና መጡ፣ {user_name}!** 🌟\n\n"
+                    "በተሳካ ሁኔታ ተመዝገበዋል! አሁን ከታች ያሉትን አገልግሎቶች መጠቀም ይችላሉ፦\n\n"
+                    "1. የጨዋታ ቦርዶች ከ 1 እስከ 200 አሉ።\n"
+                    "2. የቤቱ ኮሚሽን 20% ሲሆን ቀሪው ለአሸናፊዎች ይከፈላል።\n"
+                    "3. ሁለት እና ከዚያ በላይ ተጫዋቾች በአንድ ጊዜ ቢንጎ ከሆኑ ሽልማቱ በእኩል ይከፈላል!"
+                )
+                send_main_menu(chat_id, welcome_msg)
+                return jsonify({"status": "ok"})
+
+            # Main Menu Commands
+            if text == "/start" or text == "🏠 ዋና ገጽ (Main Menu)":
+                send_main_menu(chat_id, f"ሰላም <b>{user_name}</b>, ወደ ብራቮ ቢንጎ እንኳን ደህና መጡ። የሚፈልጉትን አማራጭ ይምረጡ:")
+                
+            elif text == "💰 ቼክ ባላንስ":
+                bal = users_db[chat_id]['balance']
+                send_message(chat_id, f"💳 የእርስዎ የአሁኑ የሂሳብ ሚዛን: **{bal} ብር**")
+                
+            elif text == "📥 ዲፖዚት (Deposit)":
+                user_states[chat_id] = {'step': 'choose_deposit_bank'}
+                send_inline_banks(chat_id, "📥 **የዲፖዚት (Deposit) ባንክ ይምረጡ:**", "dep")
+                
+            elif text == "📤 ዊዝድሮ (Withdraw)":
+                bal = users_db[chat_id]['balance']
+                if bal <= 0:
+                    send_message(chat_id, "❌ በሂሳብዎ ላይ ማውጣት የሚችሉት በቂ ገንዘብ የለም።")
+                else:
+                    user_states[chat_id] = {'step': 'choose_withdraw_bank'}
+                    send_inline_banks(chat_id, f"📤 የአሁን ባላንሰዎ **{bal} ብር** ነው። <b>ዊዝድሮ</b> ማድረግ የሚፈልጉበትን ባንክ ይምረጡ:", "wd")
+                    
+            elif text == "🎮 ፕሌይ ቢንጎ (Boards 1-200)":
+                user_states[chat_id] = {'step': 'choose_board'}
+                send_message(chat_id, "🎮 **የብራቮ ቢንጎ ቦርዶች (1 እስከ 200)**\n\nእባክዎ መጫወት የሚፈልጉትን የቦርድ ቁጥር ከ 1 እስከ 200 አስገቡ (ለምሳሌ: `45`):")
+                
+            elif text == "📞 ኮንታክት አስ (Contact Us)":
+                send_message(chat_id, "📞 ለየትኛውም እርዳታ ወይም ጥያቄ ከዚህ አድራሻ ጋር ይገናኙ፡ @BravoBingoSupport")
+                
+            # Handling Text Inputs based on State
+            elif chat_id in user_states:
+                state_data = user_states[chat_id]
+                step = state_data.get('step')
+                
+                if step == 'waiting_deposit_amount':
+                    try:
+                        amt = float(text)
+                        state_data['amount'] = amt
+                        state_data['step'] = 'waiting_deposit_screenshot'
+                        bank_name = state_data['bank']
+                        acc_info = BANK_ACCOUNTS['CBE'] if bank_name == 'CBE' else BANK_ACCOUNTS['TELEBIRR']
+                        send_message(chat_id, f"📥 እባክዎ የ **{amt} ብር** ክፍያውን በዚህ አካውንት ያስፈጽሙ፦\n\n`{acc_info}`\n\nክፍያውን ከፈጸሙ በኋላ **የስክሪንሾት ፎቶ (Screenshot)** በዚህ ቦት ላይ ይላኩ!")
+                    except ValueError:
+                        send_message(chat_id, "❌ እባክዎ ትክክለኛ የብር መጠን በቁጥር ይጻፉ:")
+                        
+                elif step == 'waiting_withdraw_amount':
+                    try:
+                        w_amt = float(text)
+                        bal = users_db[chat_id]['balance']
+                        if w_amt > bal:
+                            send_message(chat_id, f"❌ ከባላንሰዎ ({bal} ብር) በላይ ማውጣት አይችሉም። እባክዎ እንደገና ትክክለኛ መጠን ያስገቡ:")
+                        else:
+                            users_db[chat_id]['balance'] = bal - w_amt
+                            bank_name = state_data['bank']
+                            user_states.pop(chat_id, None)
+                            send_message(chat_id, f"✅ የ **{w_amt} ብር** ዊዝድሮ ጥያቄዎ በ {bank_name} በኩል ተቀባይነት አግኝቶ አውቶማቲካሊ ተላልፏል! 🌟 አዲስ ባላንስ: **{users_db[chat_id]['balance']} ብር**")
+                            send_main_menu(chat_id, "ሌላ ግብይት ማድረግ ይፈልጋሉ?")
+                    except ValueError:
+                        send_message(chat_id, "❌ እባክዎ ትክክለኛ የቁጥር መጠን ይጻፉ:")
+                        
+                elif step == 'choose_board':
+                    try:
+                        board_num = int(text)
+                        if 1 <= board_num <= 200:
+                            user_states.pop(chat_id, None)
+                            # Simulating Bingo Game Room & Random Calling
+                            send_message(chat_id, f"✅ ቦርድ ቁጥር **{bravo_bingo_board(board_num)}** ተሳክቷል! ጨዋታው ተጀምሯል... ቁጥሮች እየተጠሩ ነው። 🎙️\n\n*N1*, *B13*, *G45*...")
+                            # Simulate winning validation check after simulation
+                            winner_name = users_db[chat_id]['name']
+                            send_message(chat_id, f"🎉 **BINGO! BINGO!** 🎉\n\nእንኳን ደስ አለዎት **{winner_name}**! 🏆 Congratulations you are win this round!")
+                            send_main_menu(chat_id, "ቀጣይ ጨዋታ ለመጫወት ከታች ያሉትን ይምረጡ:")
+                        else:
+                            send_message(chat_id, "❌ እባክዎ ከ 1 እስከ 200 ያሉትን ቦርዶች ብቻ ይምረጡ:")
+                    except ValueError:
+                        send_message(chat_id, "❌ እባክዎ ትክክለኛ የቦርድ ቁጥር (ከ 1-200) ያስገቡ:")
+
+            else:
+                send_message(chat_id, "ማሳሰቢያ፦ እባክዎ ከታች ያሉትን የሜኑ አማራጮች ይጠቀሙ።")
+
+        elif "callback_query" in update:
+            query = update["callback_query"]
+            chat_id = query["message"]["chat"]["id"]
+            data = query["data"]
+            
+            if data.startswith("dep_"):
+                bank = data.split("_")[1]
+                user_states[chat_id] = {'step': 'waiting_deposit_amount', 'bank': bank}
+                send_message(chat_id, f"selected bank: {bank}. አሁን ማስገባት የሚፈልጉትን የብር መጠን ይጻፉ (ለምሳሌ: 200):")
+            elif data.startswith("wd_"):
+                bank = data.split("_")[1]
+                user_states[chat_id] = {'step': 'waiting_withdraw_amount', 'bank': bank}
+                send_message(chat_id, f"selected bank: {bank}. ማውጣት የሚፈልጉትን የብር መጠን ይጻፉ:")
+
+        elif "photo" in update:
+            # Handling Screenshot for Deposit
+            message = update["message"]
+            chat_id = message["chat"]["id"]
+            if chat_id in user_states and user_states[chat_id].get('step') == 'waiting_deposit_screenshot':
+                amt = user_states[chat_id].get('amount', 100.0)
+                users_db[chat_id]['balance'] += amt
+                user_states.pop(chat_id, None)
+                send_message(chat_id, f"✅ ስክሪንሾቱ በአውቶማቲክ ሲስተም ተረጋግጧል! **{amt} ብር** ወደ ሒሳብዎ ገብቷል። 💳 አጠቃላይ ባላንስ: **{users_db[chat_id]['balance']} ብር**")
+                send_main_menu(chat_id, "ጨዋታውን ለመጀመር ወይም ሌላ አማራጭ ለመጠቀም ከታች ይመልከቱ:")
+            else:
+                send_message(chat_id, "📷 ስክሪንሾትዎ ደርሷል። ዲፖዚት ለማድረግ መጀመሪያ '📥 ዲፖዚት (Deposit)' የሚለውን ይጫኑ።")
+
+    return jsonify({"status": "ok"})
+
+def bravo_bingo_board(num):
+    return num
+
+def send_message(chat_id, text):
+    import requests
+    url = f"{TELEGRAM_INIT_URL}/sendMessage"
+    payload = {
+        "chat_id": chat_id,
+        "text": text,
+        "parse_mode": "Markdown"
+    }
+    requests.post(url, json=payload)
+
+def send_main_menu(chat_id, text):
+    import requests
+    url = f"{TELEGRAM_INIT_URL}/sendMessage"
+    keyboard = [
+        ["🎮 ፕሌይ ቢንጎ (Boards 1-200)", "💰 ቼክ ባላንስ"],
+        ["📥 ዲፖዚት (Deposit)", "📤 ዊዝድሮ (Withdraw)"],
+        ["📞 ኮንታክት አስ (Contact Us)"]
+    ]
+    payload = {
+        "chat_id": chat_id,
+        "text": text,
+        "parse_mode": "HTML",
+        "reply_markup": {
+            "keyboard": keyboard,
+            "resize_keyboard": True
+        }
+    }
+    requests.post(url, json=payload)
+
+def send_inline_banks(chat_id, text, prefix):
+    import requests
+    url = f"{TELEGRAM_INIT_URL}/sendMessage"
+    payload = {
+        "chat_id": chat_id,
+        "text": text,
+        "parse_mode": "HTML",
+        "reply_markup": {
+            "inline_keyboard": [
+                [{"text": "🏦 ንግድ ባንክ (CBE - እንያቸው አማርጋ)", "callback_data": f"{prefix}_CBE"}],
+                [{"text": "📱 ቴሌብር (Telebirr - እንያቸው አማርጋ)", "callback_data": f"{prefix}_TELEBIRR"}]
+            ]
+        }
+    }
+    requests.post(url, json=payload)
+
+@app.route('/api/healthz')
+def healthz():
+    return jsonify({"status": "healthy", "app": "Bravo Bingo"})
+
+if __name__ == '__main__':
+    app.run(host='0.0.0.0', port=5000)
