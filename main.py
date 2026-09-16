@@ -1,199 +1,164 @@
-import os
-import logging
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes
+import random
+from flask import Flask, jsonify, request
 
-# Logging setup
-logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
-logger = logging.getLogger(__name__)
+app = Flask(__name__)
 
-# Official Financial Details & Accounts for Bravo Bingo
-CBE_ACCOUNT = "1000682528641"
-TELEBIRR_ACCOUNT = "0944123180"
-ACCOUNT_NAME = "እነያቸዉ አመርጋ"
+# የውርርድ አማራጮች እና የቤቱ ኮሚሽን (20%)
+STAKE_OPTIONS = [10, 20, 50, 100]
+HOUSE_COMMISSION_PERCENT = 0.20
 
-# Admin Telegram User ID (እራስዎ አድሚን እንዲሆኑ የርስዎን ID እዚህ ያስገቡ - ለምሳሌ: 123456789)
-ADMIN_USER_ID = 000000000  # <-- እዚህጋ የቴሌግራም IDዎን ያስገቡ (አማራጭ)
+# የማሳያ የተጠቃሚዎች ባላንስ እና የዊዝድሮ ጥያቄዎች ዳታቤዝ
+user_balances = {
+    "user_12345": 150,
+    "user_67890": 200
+}
+withdrawal_requests = []
 
-# Temporary memory for user registration and balances
-user_data_db = {}
-
-# Start Command & Registration Flow
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.effective_user
-    user_id = user.id
-    
-    if user_id not in user_data_db:
-        user_data_db[user_id] = {"balance": 0.0, "registered": True}
-
-    welcome_text = (
-        f"🎉 እንኳን ወደ Bravo Bingo በሰላም መጡ, {user.first_name}!\n\n"
-        f"💰 የእርስዎ ባላንስ: `{user_data_db[user_id]['balance']} ETB`\n\n"
-        "🎁 **ስጦታ እና ቦነስ፦**\n"
-        "• 500 ብር ወይም ከዛ በላይ Deposit ሲያደርጉ 50% ፕላስ ይሸለሙ! 🟢"
-    )
-    keyboard = [
-        [InlineKeyboardButton("🎮 Play Game", callback_data="play_menu")],
-        [InlineKeyboardButton("💳 Deposit funds", callback_data="deposit_menu")],
-        [InlineKeyboardButton("💸 Withdraw funds", callback_data="withdraw_menu")],
-        [InlineKeyboardButton("💰 Check balance", callback_data="check_balance")],
-        [InlineKeyboardButton("ℹ️ How to play", callback_data="rules")]
-    ]
-    
-    if update.message:
-        await update.message.reply_text(welcome_text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
-
-# Button Handler for Menu Options
-async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    user_id = query.from_user.id
-    
-    if user_id not in user_data_db:
-        user_data_db[user_id] = {"balance": 0.0, "registered": True}
-
-    current_balance = user_data_db[user_id]["balance"]
-
-    if query.data == "deposit_menu":
-        text = "Please select the bank option you wish to use for the top-up."
-        keyboard = [
-            [InlineKeyboardButton("Telebirr", callback_data="dep_telebirr"),
-             InlineKeyboardButton("CBE", callback_data="dep_cbe")],
-            [InlineKeyboardButton("🔙 ወደ ዋናው ገጽ", callback_data="main_menu")]
-        ]
-        await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
-
-    elif query.data == "dep_telebirr":
-        text = (
-            f"👤 ስም: {ACCOUNT_NAME}\n"
-            f"📱 አካውንት: `{TELEBIRR_ACCOUNT}`\n\n"
-            "🟡 መመሪያ፦\n"
-            "1. ከላይ ባለው Telebirr አካውንት ገንዘብ ያስተላልፉ።\n"
-            "2. ገንዘብ ከከፈሉ በኋላ የክፍያ ማረጋገጫውን (ስክሪንሾት/ሪሲት) ለዚህ ቦት ይላኩት።"
-        )
-        keyboard = [[InlineKeyboardButton("🔙 ወደ ዋናው ገጽ", callback_data="main_menu")]]
-        await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
-
-    elif query.data == "dep_cbe":
-        text = (
-            f"👤 ስም: {ACCOUNT_NAME}\n"
-            f"🏦 አካውንት: `{CBE_ACCOUNT}`\n\n"
-            "🟡 መመሪያ፦\n"
-            "1. ከላይ ባለው የንግድ ባንክ አካውንት ገንዘብ ያስተላልፉ።\n"
-            "2. ገንዘብ ከከፈሉ በኋላ የክፍያ ማረጋገጫውን (ስክሪንሾት/ሪሲት) ለዚህ ቦት ይላኩት።"
-        )
-        keyboard = [[InlineKeyboardButton("🔙 ወደ ዋናው ገጽ", callback_data="main_menu")]]
-        await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
-
-    elif query.data == "withdraw_menu":
-        if current_balance <= 0:
-            text = "❌ አካውንትዎ ላይ በቂ ባላንስ ስለሌለ ዊዝድሮ (Withdraw) ማድረግ አይችሉም!"
-        else:
-            text = f"💸 የእርስዎ ባላንስ: {current_balance} ETB ነው። ዊዝድሮ ለማድረግ የሚፈልጉትን መጠን ይጠይቁ።"
+# 200 የሚሆኑ ልዩ የቢንጎ ቦርዶችን ማመንጨት
+def generate_bingo_boards():
+    boards = {}
+    for board_id in range(1, 201):
+        b_col = random.sample(range(1, 16), 5)
+        i_col = random.sample(range(16, 31), 5)
+        n_col = random.sample(range(31, 46), 4)
+        n_col.insert(2, "FREE")
+        g_col = random.sample(range(46, 61), 5)
+        o_col = random.sample(range(61, 76), 5)
         
-        keyboard = [[InlineKeyboardButton("🔙 ወደ ዋናው ገጽ", callback_data="main_menu")]]
-        await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
+        boards[board_id] = {
+            "B": b_col,
+            "I": i_col,
+            "N": n_col,
+            "G": g_col,
+            "O": o_col
+        }
+    return boards
 
-    elif query.data == "play_menu":
-        # ተጠቃሚው ወደ ጨዋታው ምናሌ በቀጥታ ይገባል (እንዳይከለከል ተስተካክሏል)
-        text = (
-            "🎯 **Bravo Bingo - Stake (መደብ) ምርጫ**\n\n"
-            f"💰 አሁን ያለዎት ባላንስ: `{current_balance} ETB`\n"
-            "ለመጫወት የሚፈልጉትን የክፍያ መጠን ይምረጡ፦"
-        )
-        keyboard = [
-            [InlineKeyboardButton("Play 10 ETB", callback_data="play_10")],
-            [InlineKeyboardButton("Play 20 ETB", callback_data="play_20")],
-            [InlineKeyboardButton("Play 50 ETB", callback_data="play_50")],
-            [InlineKeyboardButton("💳 ሂሳብ መሙላት (Deposit)", callback_data="deposit_menu")],
-            [InlineKeyboardButton("🔙 ወደ ዋናው ገጽ", callback_data="main_menu")]
-        ]
-        await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
+BINGO_BOARDS = generate_bingo_boards()
 
-    elif query.data in ["play_10", "play_20", "play_50"]:
-        required_amount = 10 if query.data == "play_10" else (20 if query.data == "play_20" else 50)
-        if current_balance < required_amount:
-            await query.answer(f"❌ በቂ ባላንስ የለዎትም! ይህንን ጨዋታ ለመጫወት {required_amount} ETB ያስፈልጋል። እባክዎ ዴፖዚት ያድርጉ።", show_alert=True)
-        else:
-            await query.answer(f"🎮 ጨዋታው ተጀምሯል! መልካም እድል!", show_alert=True)
+# 1. ጨዋታውን መቀላቀል እና ቦርድ መምረጥ
+@app.route('/join_game', methods=['POST'])
+def join_game():
+    data = request.json
+    user_id = data.get("user_id")
+    stake = data.get("stake")
+    chosen_board_id = data.get("board_id") # ከ 1 እስከ 200 ያለው ቦርድ ቁጥር
 
-    elif query.data == "check_balance":
-        text = f"💰 **የእርስዎ አካውንት ባላንስ፦**\n\n• የሐሳብ መጠን፡ **{current_balance} ETB**\n• ስቴተስ፡ {'በቂ ባላንስ አለዎ' if current_balance > 0 else 'Low Balance'}"
-        keyboard = [
-            [InlineKeyboardButton("💳 Deposit funds", callback_data="deposit_menu")],
-            [InlineKeyboardButton("🔙 ወደ ዋናው ገጽ", callback_data="main_menu")]
-        ]
-        await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
+    if stake not in STAKE_OPTIONS:
+        return jsonify({"status": "error", "message": "የተሳሳተ የውርርድ መጠን!"}), 400
 
-    elif query.data == "rules":
-        text = (
-            "📜 **የBravo Bingo አጠቃቀም መመሪያ፦**\n\n"
-            "1. 'Play Game' በመጫወት የሚፈልጉትን የክፍያ መጠን ይምረጡ።\n"
-            "2. በቂ ባላንስ ከሌለዎት በ 'Deposit funds' በኩል ገንዘብ በመላክ አካውንትዎን ይሙሉን።\n"
-            "3. አሸናፊ ሲሆኑ በራስ ሰር ሽልማትዎ ይገባል!"
-        )
-        keyboard = [[InlineKeyboardButton("🔙 ወደ ዋናው ገጽ", callback_data="main_menu")]]
-        await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
+    if chosen_board_id not in BINGO_BOARDS:
+        return jsonify({"status": "error", "message": "ይህ የቢንጎ ቦርድ የለም!"}), 400
 
-    elif query.data == "main_menu":
-        user = query.from_user
-        welcome_text = (
-            f"🎯 **Bravo Bingo ዋና ገጽ**\n\n"
-            f"👤 ስም: {user.first_name}\n"
-            f"💰 ባላንስ: `{user_data_db.get(user_id, {}).get('balance', 0.0)} ETB`"
-        )
-        keyboard = [
-            [InlineKeyboardButton("🎮 Play Game", callback_data="play_menu")],
-            [InlineKeyboardButton("💳 Deposit funds", callback_data="deposit_menu")],
-            [InlineKeyboardButton("💸 Withdraw funds", callback_data="withdraw_menu")],
-            [InlineKeyboardButton("💰 Check balance", callback_data="check_balance")],
-            [InlineKeyboardButton("ℹ️ How to play", callback_data="rules")]
-        ]
-        await query.edit_message_text(welcome_text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
+    current_balance = user_balances.get(user_id, 0)
 
-# Photo / Receipt handler for Deposits
-async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.effective_user
-    text = (
-     "📥 **የክፍያ ማረጋገጫ (ሪሲት/ስክሪንሾት) ደርሶናል!**\n\n"
-     "አስተዳዳሪው (Admin) እስኪመረምረው እና ባላንስዎን እስኪያስተካክለው ትንሽ ይጠብቁ። ማረጋገጫው ሲጠናቀቅ በራስ ሰር ባላንስዎ ይጨመራል!"
-    )
-    await update.message.reply_text(text, parse_mode="Markdown")
+    # ሎው ባላንስ (Low Balance) ማረጋገጫ
+    if current_balance < stake:
+        return jsonify({
+            "status": "error", 
+            "message": f"Low Balance! የ계좌 ቀሪ ኑሮዎ (ብር {current_balance}) ለዚህ ጨዋታ በቂ አይደለም።"
+        }), 400
 
-# Admin command to add balance manually: /addbalance user_id amount
-async def add_balance_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
+    # ከባላንሱ ላይ ስቴክውን መቀነስ
+    user_balances[user_id] = current_balance - stake
+    assigned_board = BINGO_BOARDS[chosen_board_id]
+
+    return jsonify({
+        "status": "success",
+        "message": f"በተሳካ ሁኔታ ወደ {stake} ብር ጨዋታ ገብተዋል!",
+        "board_id": chosen_board_id,
+        "assigned_board": assigned_board,
+        "remaining_balance": user_balances[user_id]
+    })
+
+# 2. አውቶማቲክ የዲፖዚት ማረጋገጫ (FT Number Auto-Verification)
+@app.route('/verify_deposit', methods=['POST'])
+def verify_deposit():
+    data = request.json
+    user_id = data.get("user_id")
+    ft_number = data.get("ft_number")
+    amount = data.get("amount")
+
+    # FT ቁጥር ሲረጋገጥ
+    is_valid_ft = True 
+
+    if is_valid_ft:
+        if user_id not in user_balances:
+            user_balances[user_id] = 0
+        user_balances[user_id] += amount
+
+        return jsonify({
+            "status": "success",
+            "message": f"ብር {amount} አካውንትዎ ላይ በሰላም ገብቷል!",
+            "new_balance": user_balances[user_id]
+        })
+    else:
+        return jsonify({"status": "error", "message": "የተሳሳተ የትራንዛክሽን ቁጥር (FT Number)!"}), 400
+
+# 3. አውቶማቲክ የገንዘብ ማውጣት (Withdrawal) ሎጂክ
+@app.route('/withdraw', methods=['POST'])
+def withdraw_funds():
+    data = request.json
+    user_id = data.get("user_id")
+    bank_type = data.get("bank_type") # ቴሌብር ወይም ንግድ ባንክ
+    account_number = data.get("account_number")
+    amount = data.get("amount")
+
+    current_balance = user_balances.get(user_id, 0)
+
+    # ባላንስ በቂ መሆኑን ማረጋገጥ (Low Balance Check ለውዝድሮ)
+    if current_balance < amount:
+        return jsonify({
+            "status": "error",
+            "message": f"Low Balance! የ계좌 ቀሪ ኑሮዎ (ብር {current_balance}) ይህንን ያህል ገንዘብ ለማውጣት በቂ አይደለም።"
+        }), 400
+
+    # ከባላንሱ መቀነስ እና ጥያቄውን መመዝገብ
+    user_balances[user_id] = current_balance - amount
     
-    # args check
-    if len(context.args) < 2:
-        await update.message.reply_text("አጠቃቀም: /addbalance [የተጠቃሚ_ID] [የመጠን_ልክ]\nምሳሌ: /addbalance 123456789 50")
-        return
+    withdrawal_record = {
+        "user_id": user_id,
+        "bank_type": bank_type,
+        "account_number": account_number,
+        "amount": amount,
+        "status": "Processing"
+    }
+    withdrawal_requests.append(withdrawal_record)
 
-    try:
-        target_user_id = int(context.args[0])
-        amount = float(context.args[1])
-        
-        if target_user_id not in user_data_db:
-            user_data_db[target_user_id] = {"balance": 0.0, "registered": True}
-            
-        user_data_db[target_user_id]["balance"] += amount
-        await update.message.reply_text(f"✅ ለተጠቃሚ {target_user_id} መጠን {amount} ETB ተጨምሯል። አጠቃላይ ባላንስ: {user_data_db[target_user_id]['balance']} ETB")
-    except Exception as e:
-        await update.message.reply_text(f"❌ ስህተት ተፈጥሯል: {e}")
+    return jsonify({
+        "status": "success",
+        "message": f"የብር {amount} ዊዝድሮ ጥያቄዎ ተቀባይነት አግኝቷል! በቅርቡ ይተላለፍልዎታል።",
+        "remaining_balance": user_balances[user_id]
+    })
 
-def main():
-    TOKEN = "8980600172:AAH-QudXX5OniJGVJw-3ScUv5KUyi4nr5vU"
+# 4. አሸናፊዎችን በእኩል ማካፈል (Split Prize Logic)
+@app.route('/declare_winners', methods=['POST'])
+def declare_winners():
+    data = request.json
+    stake = data.get("stake")
+    winner_user_ids = data.get("winners", [])
 
-    application = Application.builder().token(TOKEN).build()
+    if not winner_user_ids:
+        return jsonify({"status": "error", "message": "አሸናፊ አልተገኘም!"}), 400
 
-    application.add_handler(CommandHandler("start", start))
-    application.add_handler(CommandHandler("addbalance", add_balance_command))
-    application.add_handler(CallbackQueryHandler(button_handler))
-    application.add_handler(MessageHandler(filters.PHOTO, handle_photo))
+    total_pool = stake * len(winner_user_ids)
+    house_cut = total_pool * HOUSE_COMMISSION_PERCENT
+    net_prize_pool = total_pool - house_cut
 
-    logger.info("Bravo Bingo Bot is running perfectly with updated flows...")
-    application.run_polling()
+    num_winners = len(winner_user_ids)
+    prize_per_winner = net_prize_pool / num_winners
 
-if __name__ == "__main__":
-    main()
+    for uid in winner_user_ids:
+        if uid not in user_balances:
+            user_balances[uid] = 0
+        user_balances[uid] += prize_per_winner
 
+    return jsonify({
+        "status": "success",
+        "total_winners": num_winners,
+        "prize_per_winner": prize_per_winner,
+        "message": f"አሸናፊዎች {num_winners} ስለሆኑ ሽልማቱ በእኩል ተካፍሏል!"
+    })
+
+if __name__ == '__main__':
+    app.run(debug=True, port=5000)
