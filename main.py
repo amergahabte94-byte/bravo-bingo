@@ -93,10 +93,8 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await start(update, context)
 
 def main():
-    TOKEN = os.getenv("TELEGRAM_TOKEN")
-    if not TOKEN:
-        logger.error("No TELEGRAM_TOKEN found in environment variables!")
-        return
+    # ቶከኑ በቀጥታ እዚህ ስለገባ ምንም አይነት Variable ማስተካከል አይጠበቅብዎትም
+    TOKEN = "8980600172:AAH-QudXX5OniJGVJw-3ScUv5KUyi4nr5vU"
 
     application = Application.builder().token(TOKEN).build()
 
